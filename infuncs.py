@@ -23,12 +23,14 @@ def get_split(dataroot, filename='data.npy', labelColumn=1, takeFactor=0.1):
     # RETURNS [trainingIDs, trainingLabels, valIDs, valLabels, testIDs, testLabels]
 
     """ Load in the datafile """
-    filedata            = np.load(dataroot+filename)
+    filepath = os.path.join(os.path.abspath(dataroot),filename)
+    assert os.path.exists(filepath), "File does not exist: {}".format(filepath)
+    filedata            = np.load(filepath)
+
     ids                 = filedata[:,0]
     labels              = filedata[:,labelColumn]
- 
+
     """ Sort the data by class into new arrays """
-    hist                = np.histogram(labels, 2)
     newlabels           = []
     newids              = []
  
@@ -40,7 +42,7 @@ def get_split(dataroot, filename='data.npy', labelColumn=1, takeFactor=0.1):
     newids      = np.asarray(newids)
 
     """ Perform one-hot encoding """
-    nclass      = np.unique(labels)
+    nclass      = len(newlabels)
     for i, part in enumerate(newlabels):
         newlabels[i] = np.eye(nclass)[newlabels[i]]
 
@@ -53,6 +55,7 @@ def get_split(dataroot, filename='data.npy', labelColumn=1, takeFactor=0.1):
 
     """ To ensure fully balanced classes, find class with lowest number of samples.
      Take only this number from each class"""
+    hist        = np.histogram(labels, 2)
     mincounts   = np.min(hist[0])
     totake      = int(takeFactor*mincounts)
 
@@ -67,7 +70,7 @@ def get_split(dataroot, filename='data.npy', labelColumn=1, takeFactor=0.1):
     return  X_train, y_train, X_val, y_val, X_test, y_test
 
 
-def get_batch(ims, labels, numAugs, dims, dataroot='./', imagename='sa_ED.nii.gz', segmname='label_sa_ED.nii.gz', cropem=False, maskout=False):
+def get_batch(ims, labels, numAugs, dims, dataroot='./', imagename='sa_ED.nii.gz', segname='label_sa_ED.nii.gz', cropem=False, maskout=False, splitseg=False):
     ### FUNCTION: takes in a list of IDs (folders), loads, processes and returns the images and labels. Primary function for returning data to a generator
     # ims:      list of IDs (folders) - folders should contain image and segmentation
     # labels:   list of labels, one for each folder in ims
@@ -78,6 +81,7 @@ def get_batch(ims, labels, numAugs, dims, dataroot='./', imagename='sa_ED.nii.gz
     # segname:   REQUIRED - name of the segmenatation file (same for ecah folder ID)
     # cropem:   whether to perform cropping around ROI (segmentation) or to return the full images. will be resampled back to dims after cropping
     # maskout:  whether to zero all data outside of the segmentation region in the image or to return the full image data
+    # splitseg: turns an n-class segmentation of shape [h, w, d] into [h, w, d, n] where each channel n is segmentation of different class.
     # Returns:  set of processed images and labels
 
     assert imagename    is not None, "imagename cannot be blank: should be the name of the image file (same for each folder ID)"
@@ -88,7 +92,6 @@ def get_batch(ims, labels, numAugs, dims, dataroot='./', imagename='sa_ED.nii.gz
 
     images      = load_and_resample(ifiles, dims)
     segs        = load_and_resample(gfiles, dims, True)
-    
 
     nclass          = len(np.unique(labels, 1))
 
@@ -101,9 +104,9 @@ def get_batch(ims, labels, numAugs, dims, dataroot='./', imagename='sa_ED.nii.gz
         for idx in range(len(labels)):
             auglabels[idx*(numAugs+1):(idx+1)*(numAugs+1),:nclass] = labels[idx]
         ''' return cropped images if cropem = True '''
-        return (cropbatch(images, segs, dims, maskout), auglabels) if cropem else (images, auglabels)
+        return (cropbatch(images, segs, dims, maskout, splitseg=splitseg), auglabels) if cropem else (images, auglabels)
     else:
-        return (cropbatch(images, segs, dims, maskout), labels) if cropem else (images, labels)
+        return (cropbatch(images, segs, dims, maskout, splitseg=splitseg), labels) if cropem else (images, labels)
 
 
 def load_and_resample(ilist, dims, isseg=False):
@@ -126,11 +129,11 @@ def get_masks(seg, onehot=True):
     
     nclass      = len(np.unique(seg))
     s1, s2, s3  = seg.shape
-    a           = seg.reshape([np.prod(seg.shape)])
+    a           = np.array(seg.reshape([np.prod(seg.shape)]), dtype=int)
     b           = np.zeros((np.prod(seg.shape),nclass))
 
     ''' Make sure classes run consecutively i.e. [0,1,2,3] and not [0,1,2,4] '''
-    for i, class_ in np.unique(seg):
+    for i, class_ in enumerate(np.unique(seg)):
         a[np.where(a==class_)]  = i
 
     ''' Go through all rows of b and at a in each row, turn element to 1 '''
@@ -140,7 +143,7 @@ def get_masks(seg, onehot=True):
     return b.reshape([s1, s2, s3, 4])
 
 
-def cropbatch(images, segs, resample_dims = [128,128,8], maskout=False, margin=10):
+def cropbatch(images, segs, resample_dims = [128,128,8], maskout=False, margin=10, splitseg=False):
     ### FUNCTION: Crops a batch of images using their segmentations as region of interest
     # images:           array of n images [n, h, w, d]
     # segs:             array of n segmentations (same dimetions as images)
@@ -163,40 +166,42 @@ def cropbatch(images, segs, resample_dims = [128,128,8], maskout=False, margin=1
     if maskout:
     	x_[s_==0] = 0
 
-    return np.expand_dims(x_,-1) if ndims(images) == 5 else x_
+    if splitseg:
+        ss_   = np.zeros(list(s_.shape) + [1+len(np.unique(s_))])
+        for idx, seg in enumerate(s_):
+            ss_[idx,:,:,:,1:] = get_masks(seg)
+        ss_[:,:,:,:,0] = x_
+        return ss_ if images.ndim == 5 else x_
+    
+    return x_
 
 
-
-def do_aug(images, segs, numAugs, squeeze=False, maskit=False):
+def do_aug(images, segs, numAugs, squeeze=False):
     ### FUNCTION: takes in a set of image arrays and returns them along with augmentations. If numAugs = 0, just images are returned
     # images:   an array of image data [n, h, w, d]
     # segs:     an array of segmentations [n, h, w, d]
     # numAugs:  the number of augmentations per image to perform
     # squeeze:  this function auto adds a 'channel' dimension for use with Tensorflow etc. Set this true to return np.squeeze()
-    # maskit:   if using segmentations which are class-per-channel (masks)
-    # Returns:  2 arrays of images and segmentations with augmentations
+    # Returns:  2 arrays of [images, segmentation] with augmentations
     ''' Augmentations are: rotation, scaling (zoom), flipping, translation and intensity shifting [0, 1, 2, 3, 4] '''
 
     ''' placeholders for the augmented images (including a +1 channel dimension at the end for returning to TensorFlow) '''
-    segchannels = len(np.unique(segs)) if maskit else 1
-    theseims    = np.zeros([images.shape[0]*numAugs+images.shape[0]] + images.shape[1:] +[1])
-    thesesegs   = np.zeros([images.shape[0]*numAugs+images.shape[0]] + images.shape[1:] +[segchannels])
+    theseims    = np.zeros([images.shape[0]*numAugs+images.shape[0]] + list(images.shape[1:]) +[1])
+    thesesegs   = np.zeros([images.shape[0]*numAugs+images.shape[0]] + list(images.shape[1:]) +[1])
 
     ''' set counter '''
     imageCount = 0
     for idx, originalim in enumerate(images):
         ''' set the image/seg to be augmented. Is reset to this after each augmentation '''
-        thisseg = segs[idx]
-
         theseims[imageCount*(numAugs+1), :,:,:,0]     = originalim
-        thesesegs[imageCount*(numAugs+1), :,:,:,0]    = thisseg
+        thesesegs[imageCount*(numAugs+1), :,:,:,0]    = segs[idx]
         
         if numAugs > 0:
             ''' set counter to ensure correct number of augmentations. Some seg augs may fail, so do while until correct number is reached '''
             augCount = 0           
             while augCount < numAugs:
                 ''' determine where to put this augmentation in the array. Reset images '''
-                augID = (imageCount * (numAugs+1) ) + idx + 1
+                augID = (imageCount * (numAugs+1) ) + augCount + 1
                 thisim      = originalim
                 thisseg     = segs[idx]
 
@@ -242,8 +247,8 @@ def do_aug(images, segs, numAugs, squeeze=False, maskit=False):
                     continue                            
                 
                 ''' resample the augmentation back to the correct dimensions. May increase with rotation etc. '''
-                thisim  = resampleit(thisim, dims)
-                thisseg = resampleit(thisseg, dims, isseg=True)
+                thisim  = resampleit(thisim, list(images.shape[1:]))
+                thisseg = resampleit(thisseg, list(images.shape[1:]), isseg=True)
                 
                 ''' Check if the segmetnation has been successfully augmented. If failed (all zeros) discard this augmentation and try again '''
                 if int(thisseg.sum())== 0:
@@ -256,10 +261,10 @@ def do_aug(images, segs, numAugs, squeeze=False, maskit=False):
                     thisim  = intensifyit(thisim, factor)
 
                 theseims[augID, :,:,:,0]    = thisim
-                thesesegs[augID, :,:,:,0]   = get_masks(thisseg) if maskit else thisseg
+                thesesegs[augID, :,:,:,0]   = thisseg
                 
                 ''' Successful augmentation, so increase counter and continue '''
-                idx+=1
+                augCount += 1
         ''' After each image has been augmentation numAug times, go to the next image'''       
         imageCount+=1 
 
