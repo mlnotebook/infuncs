@@ -20,3 +20,4 @@ This set of functions includes:
 Notes:
 * any augmenter can be implemented so long as it returns an array of images and labels to be yielded to the generator.
 * the generator should only call the ```get_batch``` function *after* the IDs have been shuffled. This gives the user opportunity to seed the random sampling.
+* requesting ```splitseg = True``` will override ```squeeze``` (as each class of the segmentation gets its own channel)
