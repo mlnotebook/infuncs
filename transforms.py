@@ -1,6 +1,6 @@
 
 ###########################################################
-# DATA AUGMENTATION FUNCTIONS FOR n-DIMENSIONAL IMAGES
+# DATA AUGMENTATION FUNCTIONS FOR 2-DIMENSIONAL IMAGES
 # author: r.robinson16@imperial.ac.uk
 # Part of the 'Data Augmentations for n-Dimensional Image
 # Input to CNNs' tutorial at https://mlnotebook.github.io
@@ -58,10 +58,12 @@ def resampleit(image, dims, isseg=False):
     return image if isseg else (image-image.min())/(image.max()-image.min()) 
    
 
-def translateit(image, offset, isseg=False):
-    order = 0 if isseg == True else 5
+def translateit(image, offset, isseg=False, mode='nearest'):
+    order   = 0 if isseg else 5
+    mode    ='nearest' if isseg else 'mirror'
+    offset  = offset if image.ndim == 2 else (int(offset[0]), int(offset[1]),0)
 
-    return interpolation.shift(image, (int(offset[0]), int(offset[1]),0), order=order, mode='nearest')
+    return interpolation.shift(image, offset , order=order, mode=mode)
 
 
 def rotateit(image, theta, isseg=False):
@@ -151,4 +153,15 @@ def cropit(image, seg=None, margin=5):
 
         return image, seg
     else:
-        return image    
+        return image
+
+'''Only works for 3D images... i.e. slice-wise'''
+def sliceshift(image, shift_min=-3, shift_max=3, fraction=0.5, isseg=False):
+    newimage = image
+    numslices   = np.random.randint(1, int(image.shape[-1]*fraction)+1 , 1, dtype=int)
+    slices      = np.random.randint(0, image.shape[-1], numslices, dtype=int)
+    for slc in slices:
+        offset      = np.random.randint(shift_min, shift_max, 2, dtype=int)
+        newimage[:,:,slc] = translateit(image[:,:,slc], offset, isseg = isseg)
+
+
